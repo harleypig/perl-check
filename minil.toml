@@ -1,0 +1,5 @@
+name = "app-perl-check"
+# badges = ["travis"]
+authority="cpan:AYOUNG"
+
+module_maker="ModuleBuildTiny"
