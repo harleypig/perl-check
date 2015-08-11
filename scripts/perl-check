@@ -1,0 +1,408 @@
+#!/usr/bin/perl
+
+## no critic qw( Documentation::RequirePodSections )
+## no critic qw( Documentation::ProhibitVerbatimMarkup )
+
+use strict;
+use warnings FATAL => 'all';
+use autodie;
+
+use IPC::Run3::Simple;
+
+=head1 NAME
+
+  perlcheck - A perl syntax checker with some extras added.
+
+=head1 SYNOPSIS
+
+  XXX: Do me baby!
+
+=cut
+
+my $efm_prefix = '## efm';
+
+# Grab perldoc location
+( my $perldoc, my $err, my $syserr ) = run3( [qw( which perldoc )] );
+
+die "Couldn't find perldoc, or some other problem happened. ($err or $syserr)\n"
+  if $err || $syserr;
+
+die "Too many arguments!\n"
+  if scalar @ARGV > 1;
+
+my $file = shift @ARGV
+  or die "No filename to check!\n";
+
+die "$file does not exist\n"
+  unless -e $file;
+
+die "$file is not a file\n"
+  unless -f _;
+
+die "$file is not readable\n"
+  unless -r _;
+
+my $DEBUG = 0;
+
+=head1 DESCRIPTION
+
+  Lines that begin with C<## efm > will be parsed and specific packages and
+  settings will be applied to the final perl syntax check call.
+
+  You may put these comments anywhere in your file, but they will apply
+  globally.
+
+  The prefix C<## efm> must start in the first column.
+
+=head2 skip
+
+  A number of additional checks are added to the C<perl -c> syntax check call
+  by default.
+
+  If the module is not installed on your system then it is not included in the
+  syntax check call.
+
+  If the module is installed on your system, but you don't want it to be used
+  in checking your script you will need to tell B<perlcheck> to skip it.
+
+  ## efm skip unused
+
+  This will not run the C<warnings::unused> check.
+
+  You may skip multiple tests on a single lilne.
+
+  Note: Prior to perl 5.10 the uninit check was available and is used if an
+  earlier version of perl is being run.
+
+=head3  all
+
+  If you include C<## efm skip all> then all additional tests will be skipped.
+
+=head3  circular
+
+  The circular::require module generates a warning whenever a module is
+  skipped due to being loaded, if that module has not finished executing.
+
+  See the documentation for this module for more details.
+
+  This is the equivalent of C<perl -M-circular::require -c yourfile.pl>.
+
+  Adding the comment C<## efm skip circular> will skip this test.
+
+=head3  indirect
+
+  The indirect module warns about using the indirect method call syntax.
+
+  See the documentation for this module for more details.
+
+  This should not interfere with any C<no indirect> or C<use indirect> you may
+  have in your script, but if you run into problems please read the
+  documentation for the indirect package.
+
+  This is the equivalent of C<perl -M-indirect=global -c yourfile.pl>.
+
+  Adding the comment C<## efm skip indirect> will skip this test.
+
+=head3  lint
+
+  The B::Lint module is equivalent to an extended version of the -w option of
+  perl.
+
+  See the documentation for this module for more details.
+
+  This is the equivalent of C<perl -MO=Lint,all -c yourfile.pl>.
+
+  If B::Lint::StrictOO is installed, it will be added to the lint check
+  automatically, and be the equivalent of
+  C<perl -MB::Lint::StrictOO -MO=Lint,all,oo -c yourfile.pl>
+
+  Adding the comment C<## efm skip lint> will skip this test.
+
+=cut
+
+# !!! add documentation for skipping lint tests
+
+my %lint_test = do { map { ( $_, 1 ) } qw(
+
+  bare-subs context dollar-underscore implicit-read implicit-write
+  magic-diamond oo private-names regexp-variables undefined-subs
+
+)};
+
+=head3  lintsubs
+
+  The B::LintSubs module
+
+  See the documentation for this module for more details.
+
+  This is the equivalent of C<perl -M-circular -c yourfile.pl>.
+
+  Adding the comment C<## efm skip circular> will skip this test.
+
+=head3  method
+
+  The warnings::method module
+
+  See the documentation for this module for more details.
+
+  This is the equivalent of C<perl -M-circular -c yourfile.pl>.
+
+  Adding the comment C<## efm skip circular> will skip this test.
+
+=head3  unused
+
+  The warnings::unsed module
+
+  See the documentation for this module for more details.
+
+  This is the equivalent of C<perl -M-circular -c yourfile.pl>.
+
+  Adding the comment C<## efm skip circular> will skip this test.
+
+=head3 uninit
+
+  The uninit module
+
+  See the documentation for this module for more details.
+
+  This is the equivalent of C<perl -M-circular -c yourfile.pl>.
+
+  Adding the comment C<## efm skip circular> will skip this test.
+
+=cut
+
+my %syntax_test = (
+
+  circular => '-circular::require',
+  indirect => '-indirect=global',
+  lint     => 'B::Lint',
+  lintsubs => 'B::LintSubs()',
+  method   => 'warnings::method',
+  unused   => 'warnings::unused',
+
+);
+
+# uninit is not included in 5.10 and later
+$syntax_test{ uninit } = 'uninit'
+  if $] < 5.010; ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
+
+=head2 includes
+
+# Any line that begins with
+#
+# ## efm includes
+#
+# will add the listed directories to the -c call. E.g.,
+#
+# ## efm includes /path/to/some/dir
+#
+# will add -I /path/to/some/dir to the -c call.
+#
+# ./lib and ./lib/auto are added by default.
+
+=cut
+
+my @includes = qw( ./lib ./lib/auto );
+
+=head2 modules
+
+# Any line that begins with
+#
+# ## efm modules
+#
+# will add the listed modules to the -c call. E.g.,
+#
+# ## efm modules Module::Name
+#
+# will add -MModule::Name to the -c call.
+
+=cut
+
+my @modules;
+
+=head2 skip_error
+
+# Any line that begins with
+#
+# ## efm skip_error
+#
+# will not report the given error.
+#
+# One error per line is expected.
+#
+# ## efm skip_error "DB::single" used only once: possible typo
+#
+# would ignore that error.
+#
+# !!! Add the defaults here.
+
+=cut
+
+my @skip_errors = (
+
+  '"DB::single" used only once: possible typo',
+  'BEGIN failed--compilation aborted',
+
+);
+
+=head2 debug
+
+# Any line that begins with
+#
+# ## efm debug
+#
+# will turn on debugging messages. Anything after debug
+# will be ignored.
+
+=cut
+
+# # efm debug
+
+( my $efm, $err, $syserr ) = run3( [ 'grep', "^$efm_prefix ", $file ] );
+
+if ( ! $syserr ) {  # 0 = success because we're dealing with the shell
+  for my $line ( split /\n+/, $efm ) {
+
+    ## no critic qw( ControlStructures::ProhibitCascadingIfElse )
+
+    if ( $line =~ /^$efm_prefix\s+debug/ ) {
+
+      $DEBUG++;
+
+    } elsif ( $line =~ /^$efm_prefix\s+skip\s+all/ ) {
+
+      %syntax_test = ();
+
+    } elsif ( $line =~ s/^$efm_prefix\s+skip\s+// ) {
+
+      for my $test ( split /\s+/, $line ) {
+
+        delete $syntax_test{ $test }
+          if exists $syntax_test{ $test };
+
+        $lint_test{ $test } = 0
+          if exists $lint_test{ $test };
+
+      }
+
+    } elsif ( $line =~ s/^$efm_prefix\s+skip_error\s+// ) {
+
+      push @skip_errors, $line;
+
+    } elsif ( $line =~ s/^$efm_prefix\s+modules\s+// ) {
+
+      push @modules, split /\s+/, $line;
+
+    } elsif ( $line =~ s/^$efm_prefix\s+includes\s+// ) {
+
+      push @includes, split /\s+/, $line;
+
+    }
+  } ## end for my $line ( split...)
+} ## end if ( ! $syserr )
+
+# Lint requires some special handling
+
+if ( exists $syntax_test{ lint } && package_exists( $syntax_test{ lint } ) ) {
+
+  if ( package_exists( 'B::Lint::StrictOO' ) && $lint_test{ oo } ) {
+
+    push @modules, 'B::Lint::StrictOO';
+
+  } else {
+
+    $lint_test{ oo } = 0;
+
+  }
+
+  my $lint_tests = join ',', grep { $lint_test{ $_ } } keys %lint_test;
+
+  push @modules, "O=Lint,$lint_tests";
+
+} ## end if ( exists $syntax_test...)
+
+# Add the modules used to check the source
+
+for my $test ( keys %syntax_test ) {
+
+  next if $test eq 'lint';
+
+  my $module = $syntax_test{ $test };
+  ( my $m = $module ) =~ s/^-?//;
+  $m =~ s/=.*$//;
+  $m =~ s/\(\)$//;
+
+  package_exists( $m )
+    ? push @modules, $module
+    : delete $syntax_test{ $test };
+
+}
+
+debug( 'tests: ' . join ' ', keys %syntax_test );
+
+my @cmd = 'perl';
+
+push @cmd, map { "-I $_" } @includes
+  if scalar @includes;
+
+push @cmd, map { "-M$_" } @modules
+  if scalar @modules;
+
+push @cmd, '-c', $file;
+
+debug( "cmd: @cmd" );
+
+run3( {
+
+    'cmd'    => \@cmd,
+    'stdout' => \$err,
+    'stderr' => \my @errors,
+    'syserr' => \$syserr,
+
+} );
+
+for my $error ( @errors ) {
+
+  # For this program, we only care about errors directly related to the file
+  # we are checking.
+
+  next unless $error =~ /$file/;
+
+  print "$error\n"
+    unless grep { $error =~ /$_/ } @skip_errors;
+
+}
+
+exit 0;
+
+sub package_exists { ## no critic qw( Subroutines::RequireArgUnpacking )
+
+  ( undef, undef, $syserr ) = run3( [ $perldoc, '-l', $_[0] ] );
+  return ! $syserr;  # 0 = success because we're dealing with the shell
+
+}
+
+## no critic qw( Subroutines::RequireFinalReturn )
+sub debug { $DEBUG && print "$_[0] at $file line 1\n" }
+
+=head1 EXAMPLES
+
+  XXX: TBD
+
+=head1 LICENSE AND COPYRIGHT
+
+  XXX: TBD
+
+=head1 SUPPORT
+
+  XXX: TBD
+
+=head1 BUGS
+
+  XXX: TBD
+
+=head1 AUTHOR
+
+  XXX: TBD
+
+=cut
